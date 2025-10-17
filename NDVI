@@ -1,0 +1,90 @@
+# ==========================================
+# ANÁLISIS TEMPORAL DEL NDVI (El Salvador, 2023–2024)
+# ==========================================
+
+import geemap
+import ee
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Inicializar Earth Engine
+ee.Initialize()
+
+# Definir el área de estudio (El Salvador)
+el_salvador = ee.FeatureCollection("FAO/GAUL/2015/level0") \
+                .filter(ee.Filter.eq('ADM0_NAME', 'El Salvador'))
+
+# Rango de fechas
+fecha_inicio = '2023-01-01'
+fecha_fin = '2024-12-31'
+
+# Cargar imágenes Sentinel-2 (nivel SR)
+coleccion = ee.ImageCollection('COPERNICUS/S2_SR') \
+    .filterDate(fecha_inicio, fecha_fin) \
+    .filterBounds(el_salvador) \
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+
+# Calcular NDVI = (NIR - RED) / (NIR + RED)
+def calcular_ndvi(img):
+    ndvi = img.normalizedDifference(['B8', 'B4']).rename('NDVI')
+    return img.addBands(ndvi)
+
+coleccion_ndvi = coleccion.map(calcular_ndvi)
+
+# Función para promedio mensual de NDVI en todo El Salvador
+def promedio_mensual(year, month):
+    start = ee.Date.fromYMD(year, month, 1)
+    end = start.advance(1, 'month')
+    mensual = coleccion_ndvi.filterDate(start, end).mean()
+    mean_ndvi = mensual.select('NDVI').reduceRegion(
+        reducer=ee.Reducer.mean(),
+        geometry=el_salvador.geometry(),
+        scale=1000,
+        maxPixels=1e13
+    ).get('NDVI')
+    return ee.Feature(None, {'fecha': start.format('YYYY-MM'), 'NDVI': mean_ndvi})
+
+# Lista de fechas
+fechas = []
+for y in [2023, 2024]:
+    for m in range(1, 13):
+        fechas.append(promedio_mensual(y, m))
+
+# Ejecutar en Earth Engine
+ndvi_mensual = ee.FeatureCollection(fechas).getInfo()
+
+# Convertir a DataFrame de pandas
+datos = []
+for f in ndvi_mensual['features']:
+    fecha = f['properties']['fecha']
+    valor = f['properties']['NDVI']
+    datos.append((fecha, valor))
+
+df = pd.DataFrame(datos, columns=['Fecha', 'NDVI'])
+df['Fecha'] = pd.to_datetime(df['Fecha'])
+df = df.sort_values('Fecha')
+
+# ===========================
+# 📈 GRÁFICO 2D: NDVI PROMEDIO MENSUAL
+# ===========================
+plt.figure(figsize=(8,4))
+plt.plot(df['Fecha'], df['NDVI'], marker='o', color='green', linewidth=2)
+plt.title('Evolución mensual del NDVI en El Salvador (2023–2024)')
+plt.xlabel('Fecha')
+plt.ylabel('NDVI promedio')
+plt.grid(True)
+plt.show()
+
+# ===========================
+# 🗺️ MAPA 2D DEL NDVI PROMEDIO
+# ===========================
+mapa_promedio = coleccion_ndvi.mean().select('NDVI')
+
+Map = geemap.Map(center=[13.7, -88.9], zoom=8)
+Map.addLayer(
+    mapa_promedio.clip(el_salvador),
+    {'min': 0, 'max': 1, 'palette': ['brown', 'yellow', 'green']},
+    'NDVI promedio (2023–2024)'
+)
+Map.addLayerControl()
+Map
